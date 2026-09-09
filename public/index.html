@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+  <meta name="theme-color" content="#050607">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="MiniDash">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <title>MiniDash</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
+      --bg: #050607;
+      --fg: #d9dde1;
+      --secondary: #8e969e;
+      --dim: #5f666d;
+      --line: #1b1f23;
+      --caution: #b49a68;
+      --warning: #b56f68;
+      --nudge-x: 0px;
+      --nudge-y: 0px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg); }
+    body { -webkit-font-smoothing: antialiased; }
+
+    .pages {
+      width: 100%; height: 100%; overflow-x: auto; overflow-y: hidden;
+      display: flex; scroll-snap-type: x mandatory; scrollbar-width: none;
+    }
+    .pages::-webkit-scrollbar { display: none; }
+
+    .page {
+      flex: 0 0 100%; width: 100%; height: 100vh; height: 100dvh;
+      scroll-snap-align: start;
+      padding: calc(env(safe-area-inset-top) + 12px) 18px calc(env(safe-area-inset-bottom) + 10px);
+      display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto;
+      transform: translate(var(--nudge-x), var(--nudge-y));
+    }
+
+    .topline { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding-bottom: 7px; }
+    h1 { margin: 0; font-size: 1.05rem; line-height: 1.2; font-weight: 600; letter-spacing: .01em; }
+    .freshness { font-size: .72rem; color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .freshness.stale { color: var(--caution); font-weight: 600; letter-spacing: .04em; }
+
+    .sensor-list { min-height: 0; display: grid; align-content: stretch; }
+    .sensor {
+      min-height: 0; display: grid;
+      grid-template-columns: minmax(6.2rem, 1fr) minmax(5.6rem, .95fr) minmax(5rem, .85fr);
+      align-items: center; column-gap: 8px; border-top: 1px solid var(--line);
+      font-variant-numeric: tabular-nums lining-nums;
+    }
+    .sensor:first-child { border-top-color: transparent; }
+    .sensor-label { min-width: 0; align-self: center; }
+    .sensor-name { font-size: 1.02rem; line-height: 1.15; font-weight: 540; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .absolute { margin-top: 5px; font-size: .72rem; line-height: 1; color: var(--dim); white-space: nowrap; }
+    .reading { display: flex; justify-content: flex-end; align-items: baseline; white-space: nowrap; letter-spacing: -.045em; }
+    .reading .value { font-size: clamp(2.25rem, 10.6vw, 2.95rem); font-weight: 470; line-height: .92; }
+    .reading .unit { margin-left: 2px; font-size: 1.15rem; font-weight: 450; color: var(--secondary); letter-spacing: 0; }
+    .reading.rh .value { font-size: clamp(2.55rem, 12vw, 3.3rem); font-weight: 520; }
+    .unavailable { color: var(--dim); }
+
+    .wall {
+      border-top: 1px solid var(--line); padding: 9px 0 8px;
+      display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 5px 12px;
+      font-variant-numeric: tabular-nums lining-nums;
+    }
+    .wall.hidden { display: none; }
+    .wall-label { font-size: .95rem; font-weight: 550; }
+    .wall-value { font-size: 2.15rem; line-height: 1; font-weight: 510; letter-spacing: -.04em; }
+    .wall-details { grid-column: 1 / -1; font-size: .69rem; color: var(--dim); }
+    .wall.caution .wall-value { color: var(--caution); }
+    .wall.warning .wall-value { color: var(--warning); }
+
+    .status-strip {
+      min-height: 25px; border-top: 1px solid var(--line); padding-top: 7px;
+      display: flex; align-items: center; gap: 17px; color: var(--dim); font-size: .68rem;
+      font-variant-numeric: tabular-nums;
+    }
+    .status-strip.hidden { display: none; }
+    .status-item strong { color: var(--secondary); font-weight: 600; }
+    .status-item.active strong { color: var(--fg); }
+    .source-error { margin-left: auto; color: var(--caution); font-weight: 600; letter-spacing: .04em; }
+
+    @media (max-height: 680px) {
+      .page { padding-top: calc(env(safe-area-inset-top) + 7px); }
+      .topline { padding-bottom: 4px; }
+      .sensor-name { font-size: .92rem; }
+      .absolute { margin-top: 2px; font-size: .64rem; }
+      .wall { padding: 6px 0; }
+      .wall-value { font-size: 1.85rem; }
+      .status-strip { min-height: 20px; padding-top: 4px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="pages">
+    <main class="page" aria-label="Climate dashboard">
+      <header class="topline">
+        <h1 id="title">Climate</h1>
+        <div id="freshness" class="freshness">connecting</div>
+      </header>
+
+      <section id="sensors" class="sensor-list" aria-live="off"></section>
+
+      <section id="wall" class="wall hidden">
+        <div id="wall-label" class="wall-label">Wall margin</div>
+        <div id="wall-value" class="wall-value">—</div>
+        <div id="wall-details" class="wall-details"></div>
+      </section>
+
+      <footer id="status-strip" class="status-strip hidden">
+        <span id="door" class="status-item"></span>
+        <span id="dehumidifier" class="status-item"></span>
+        <span id="source-error" class="source-error"></span>
+      </footer>
+    </main>
+  </div>
+
+  <script>
+    const els = {
+      title: document.getElementById('title'),
+      freshness: document.getElementById('freshness'),
+      sensors: document.getElementById('sensors'),
+      wall: document.getElementById('wall'),
+      wallLabel: document.getElementById('wall-label'),
+      wallValue: document.getElementById('wall-value'),
+      wallDetails: document.getElementById('wall-details'),
+      statusStrip: document.getElementById('status-strip'),
+      door: document.getElementById('door'),
+      dehumidifier: document.getElementById('dehumidifier'),
+      sourceError: document.getElementById('source-error'),
+    };
+
+    let refreshTimer = null;
+    let currentState = null;
+
+    function finite(value) { return typeof value === 'number' && Number.isFinite(value); }
+    function number(value, digits) { return finite(value) ? value.toFixed(digits) : '—'; }
+    function ageText(ms) {
+      if (!finite(ms)) return 'no data';
+      if (ms < 90_000) return 'now';
+      const minutes = Math.round(ms / 60_000);
+      if (minutes < 60) return `${minutes}m ago`;
+      const hours = Math.round(minutes / 60);
+      return `${hours}h ago`;
+    }
+
+    function renderSensor(sensor, showAh) {
+      const row = document.createElement('div');
+      row.className = 'sensor' + (sensor.available ? '' : ' unavailable');
+
+      const label = document.createElement('div');
+      label.className = 'sensor-label';
+      const name = document.createElement('div');
+      name.className = 'sensor-name';
+      name.textContent = sensor.label;
+      label.appendChild(name);
+      if (showAh) {
+        const ah = document.createElement('div');
+        ah.className = 'absolute';
+        ah.textContent = finite(sensor.ah_g_m3) ? `${sensor.ah_g_m3.toFixed(1)} g/m³` : '— g/m³';
+        label.appendChild(ah);
+      }
+
+      const temp = document.createElement('div');
+      temp.className = 'reading temp';
+      temp.innerHTML = `<span class="value">${number(sensor.temperature_c, 1)}</span><span class="unit">°</span>`;
+
+      const rh = document.createElement('div');
+      rh.className = 'reading rh';
+      rh.innerHTML = `<span class="value">${number(sensor.rh_pct, 0)}</span><span class="unit">%</span>`;
+
+      row.append(label, temp, rh);
+      return row;
+    }
+
+    function renderStatus(target, item, onText, offText) {
+      if (!item || item.active === null) {
+        target.textContent = '';
+        target.className = 'status-item';
+        return;
+      }
+      target.className = 'status-item' + (item.active ? ' active' : '');
+      target.replaceChildren(document.createTextNode(`${item.label} `));
+      const strong = document.createElement('strong');
+      strong.textContent = item.active ? onText : offText;
+      target.appendChild(strong);
+    }
+
+    function render(state, { failed = false } = {}) {
+      currentState = state;
+      const display = state.display || {};
+      document.title = display.title || 'MiniDash';
+      els.title.textContent = display.title || 'Climate';
+
+      els.sensors.replaceChildren(...(state.sensors || []).map(s => renderSensor(s, display.show_absolute_humidity !== false)));
+      els.sensors.style.gridTemplateRows = `repeat(${Math.max(1, state.sensors?.length || 1)}, minmax(0, 1fr))`;
+
+      if (state.wall) {
+        els.wall.classList.remove('hidden', 'caution', 'warning');
+        els.wallLabel.textContent = state.wall.label || 'Wall margin';
+        els.wallValue.textContent = finite(state.wall.dew_margin_c) ? `${state.wall.dew_margin_c >= 0 ? '+' : ''}${state.wall.dew_margin_c.toFixed(1)}°` : '—';
+        if (finite(state.wall.dew_margin_c)) {
+          if (state.wall.dew_margin_c < state.wall.warning_below_c) els.wall.classList.add('warning');
+          else if (state.wall.dew_margin_c < state.wall.caution_below_c) els.wall.classList.add('caution');
+        }
+        if (display.show_wall_details !== false) {
+          const parts = [];
+          if (finite(state.wall.probe_temperature_c)) parts.push(`probe ${state.wall.probe_temperature_c.toFixed(1)}°`);
+          if (finite(state.wall.dew_point_c)) parts.push(`dew point ${state.wall.dew_point_c.toFixed(1)}°`);
+          els.wallDetails.textContent = parts.join(' · ');
+        } else {
+          els.wallDetails.textContent = '';
+        }
+      } else {
+        els.wall.classList.add('hidden');
+      }
+
+      const age = state.freshness?.sampled_ts_ms ? Math.max(0, Date.now() - state.freshness.sampled_ts_ms) : null;
+      const stale = failed || state.freshness?.stale || (finite(age) && age > (display.stale_after_minutes || 12) * 60_000);
+      els.freshness.textContent = stale ? `STALE · ${ageText(age)}` : ageText(age);
+      els.freshness.className = 'freshness' + (stale ? ' stale' : '');
+
+      if (display.show_status_strip !== false) {
+        els.statusStrip.classList.remove('hidden');
+        renderStatus(els.door, state.status?.door, 'OPEN', 'closed');
+        renderStatus(els.dehumidifier, state.status?.dehumidifier, 'ON', 'off');
+        els.sourceError.textContent = failed ? 'SOURCE OFFLINE' : '';
+      } else {
+        els.statusStrip.classList.add('hidden');
+      }
+    }
+
+    function loadCached() {
+      try {
+        const cached = JSON.parse(localStorage.getItem('minidash:last-state'));
+        if (cached?.ok) return cached;
+      } catch (_) {}
+      return null;
+    }
+
+    async function refresh() {
+      try {
+        const response = await fetch('/api/state', { cache: 'no-store' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const state = await response.json();
+        if (!state.ok) throw new Error('source unavailable');
+        localStorage.setItem('minidash:last-state', JSON.stringify(state));
+        render(state);
+        const seconds = Math.max(5, Number(state.display?.refresh_seconds) || 20);
+        clearTimeout(refreshTimer);
+        refreshTimer = setTimeout(refresh, seconds * 1000);
+      } catch (_) {
+        const fallback = currentState || loadCached();
+        if (fallback) render(fallback, { failed: true });
+        else {
+          els.freshness.textContent = 'SOURCE OFFLINE';
+          els.freshness.className = 'freshness stale';
+        }
+        clearTimeout(refreshTimer);
+        refreshTimer = setTimeout(refresh, 10_000);
+      }
+    }
+
+    // Move the entire static layout by a barely perceptible pixel every few
+    // minutes to avoid leaving exactly the same OLED pixels lit indefinitely.
+    const nudges = [[0,0],[1,0],[0,1],[-1,0],[0,-1],[1,1],[-1,-1]];
+    let nudgeIndex = 0;
+    function nudge() {
+      nudgeIndex = (nudgeIndex + 1) % nudges.length;
+      const [x, y] = nudges[nudgeIndex];
+      document.documentElement.style.setProperty('--nudge-x', `${x}px`);
+      document.documentElement.style.setProperty('--nudge-y', `${y}px`);
+    }
+
+    const cached = loadCached();
+    if (cached) render(cached, { failed: true });
+    refresh();
+    setInterval(nudge, 5 * 60_000);
+    addEventListener('online', refresh);
+    addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+  </script>
+</body>
+</html>
