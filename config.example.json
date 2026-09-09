@@ -1,0 +1,35 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8788
+  },
+  "display": {
+    "title": "Climate",
+    "refresh_seconds": 20,
+    "stale_after_minutes": 12,
+    "show_absolute_humidity": true,
+    "show_wall_details": true,
+    "show_status_strip": true
+  },
+  "humidity": {
+    "base_url": "http://127.0.0.1:8787",
+    "hours": 1,
+    "timeout_ms": 5000
+  },
+  "sensors": [
+    { "source": "Sensor 1", "label": "Room 1" },
+    { "source": "Sensor 2", "label": "Room 2" },
+    { "source": "Sensor 3", "label": "Room 3" },
+    { "source": "Sensor 4", "label": "Outside" }
+  ],
+  "wall": {
+    "enabled": true,
+    "label": "Wall margin",
+    "caution_below_c": 3.0,
+    "warning_below_c": 1.0
+  },
+  "status": {
+    "door_label": "Door",
+    "dehumidifier_label": "Dehumidifier"
+  }
+}
