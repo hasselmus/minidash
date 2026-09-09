@@ -37,7 +37,11 @@
     .page {
       flex: 0 0 100%; width: 100%; height: 100vh; height: 100dvh;
       scroll-snap-align: start;
-      padding: calc(env(safe-area-inset-top) + 12px) 18px calc(env(safe-area-inset-bottom) + 10px);
+      padding:
+        calc(env(safe-area-inset-top) + 12px)
+        calc(env(safe-area-inset-right) + 18px)
+        calc(env(safe-area-inset-bottom) + 10px)
+        calc(env(safe-area-inset-left) + 18px);
       display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto;
       transform: translate(var(--nudge-x), var(--nudge-y));
     }
@@ -47,11 +51,11 @@
     .freshness { font-size: .72rem; color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
     .freshness.stale { color: var(--caution); font-weight: 600; letter-spacing: .04em; }
 
-    .sensor-list { min-height: 0; display: grid; align-content: stretch; }
+    .sensor-list { min-height: 0; display: grid; align-content: stretch; row-gap: 5px; }
     .sensor {
       min-height: 0; display: grid;
       grid-template-columns: minmax(6.2rem, 1fr) minmax(5.6rem, .95fr) minmax(5rem, .85fr);
-      align-items: center; column-gap: 8px; border-top: 1px solid var(--line);
+      align-items: center; column-gap: 8px; padding: 2px 0; border-top: 1px solid var(--line);
       font-variant-numeric: tabular-nums lining-nums;
     }
     .sensor:first-child { border-top-color: transparent; }
@@ -59,9 +63,9 @@
     .sensor-name { font-size: 1.02rem; line-height: 1.15; font-weight: 540; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .absolute { margin-top: 5px; font-size: .72rem; line-height: 1; color: var(--dim); white-space: nowrap; }
     .reading { display: flex; justify-content: flex-end; align-items: baseline; white-space: nowrap; letter-spacing: -.045em; }
-    .reading .value { font-size: clamp(2.25rem, 10.6vw, 2.95rem); font-weight: 470; line-height: .92; }
-    .reading .unit { margin-left: 2px; font-size: 1.15rem; font-weight: 450; color: var(--secondary); letter-spacing: 0; }
-    .reading.rh .value { font-size: clamp(2.55rem, 12vw, 3.3rem); font-weight: 520; }
+    .reading .value { font-size: clamp(2.15rem, 9.6vw, 2.72rem); font-weight: 470; line-height: .9; }
+    .reading .unit { margin-left: 2px; font-size: 1.12rem; font-weight: 450; color: var(--secondary); letter-spacing: 0; }
+    .reading.rh .value { font-size: clamp(2.4rem, 10.8vw, 3rem); font-weight: 520; }
     .unavailable { color: var(--dim); }
 
     .wall {
@@ -87,10 +91,18 @@
     .source-error { margin-left: auto; color: var(--caution); font-weight: 600; letter-spacing: .04em; }
 
     @media (max-height: 680px) {
-      .page { padding-top: calc(env(safe-area-inset-top) + 7px); }
+      .page {
+        padding-top: calc(env(safe-area-inset-top) + 7px);
+        padding-right: calc(env(safe-area-inset-right) + 16px);
+        padding-left: calc(env(safe-area-inset-left) + 16px);
+      }
       .topline { padding-bottom: 4px; }
+      .sensor-list { row-gap: 6px; }
+      .sensor { padding: 2px 0; }
       .sensor-name { font-size: .92rem; }
       .absolute { margin-top: 2px; font-size: .64rem; }
+      .reading .value { font-size: 2.62rem; }
+      .reading.rh .value { font-size: 2.92rem; }
       .wall { padding: 6px 0; }
       .wall-value { font-size: 1.85rem; }
       .status-strip { min-height: 20px; padding-top: 4px; }
