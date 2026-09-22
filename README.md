@@ -1,6 +1,6 @@
 # MiniDash
 
-A deliberately quiet, always-on LAN dashboard intended for a small OLED phone used as a status display. The first screen is a climate view backed by the `humidity-logger` dashboard API.
+A deliberately quiet, always-on LAN dashboard intended for a small OLED phone used as a status display. The first screen is a climate view backed by the `environment-logger` native JSON API.
 
 The project has no npm dependencies. Node.js serves the phone UI and proxies the humidity API, so Safari/PWA requests remain same-origin and no CORS changes are needed in the logger.
 
@@ -14,7 +14,7 @@ The project has no npm dependencies. Node.js serves the phone UI and proxies the
 - small door/dehumidifier state strip
 - stale/offline indication without blanking the last known readings
 - tiny whole-layout pixel shift every five minutes to reduce static OLED exposure
-- horizontally scroll-snapping page container ready for later dashboard screens
+- horizontally scroll-snapping pages with configurable 24 h plots for the most important environmental metrics
 
 ## Configuration and privacy
 
@@ -30,11 +30,12 @@ nano ~/.config/minidash/config.json
 
 The important fields are:
 
-- `humidity.base_url`: the LAN/local base URL of the existing humidity dashboard, normally `http://127.0.0.1:8787` when both services run on the same Pi
-- `sensors[].source`: exact sensor names returned by the humidity logger API
+- `environment.base_url`: the LAN/local base URL of `environment-logger`
+- `sensors[].source`: exact sensor names returned by the environment logger API
 - `sensors[].label`: short labels shown on the phone
-- `wall`: wall-margin label and quiet caution/warning thresholds
-- `status`: labels for the door and dehumidifier state
+- `wall.source`: sensor name supplying `dew_margin`, `probe_temperature` and `dew_point`
+- `status`: state entity/field mappings for door and dehumidifier
+- `plots`: swipeable plot pages, their metric, sensors and time window
 
 The server listens on port `8788` by default. `MINIDASH_HOST`, `MINIDASH_PORT` and `MINIDASH_CONFIG` can override the local configuration.
 
@@ -78,12 +79,17 @@ Open the MiniDash URL in Safari, use **Add to Home Screen**, then launch the ins
 
 For a dedicated display, configure iOS separately not to auto-lock. MiniDash itself performs no wake-lock tricks: if iOS suspends or reloads the page, it refreshes immediately when visible again. The last good state is also cached locally so a temporary logger/network failure leaves useful readings on screen, clearly marked stale/offline.
 
-## Humidity logger API
+## Environment logger API
 
-MiniDash expects the existing endpoint:
+MiniDash now uses the native environment-logger endpoints:
 
 ```text
-GET /api/data?hours=1
+GET /api/v1/latest
+GET /api/v1/series?hours=24
 ```
 
-It uses the API's `latest` climate readings plus the newest wall-data bucket. It does not read SQLite, Homebridge, Matter or Tuya directly and does not write to the humidity logger.
+The first screen uses the latest measurements and states. Configurable additional pages proxy the time-series endpoint and render local, dependency-free Canvas plots. Swipe horizontally on the iPhone to move between the live climate screen and plots.
+
+MiniDash still accepts the old `humidity.base_url` configuration as a compatibility mode, but plot pages require the native `environment` source.
+
+MiniDash does not read SQLite, Homebridge or Matter directly and does not write to environment-logger.
