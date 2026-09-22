@@ -18,6 +18,7 @@
       --secondary: #8e969e;
       --dim: #5f666d;
       --line: #1b1f23;
+      --grid: #242b31;
       --caution: #b49a68;
       --warning: #b56f68;
       --nudge-x: 0px;
@@ -31,24 +32,31 @@
     .pages {
       width: 100%; height: 100%; overflow-x: auto; overflow-y: hidden;
       display: flex; scroll-snap-type: x mandatory; scrollbar-width: none;
+      overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch;
     }
     .pages::-webkit-scrollbar { display: none; }
 
     .page {
       flex: 0 0 100%; width: 100%; height: 100vh; height: 100dvh;
-      scroll-snap-align: start;
+      scroll-snap-align: start; scroll-snap-stop: always;
       padding:
         calc(env(safe-area-inset-top) + 12px)
         calc(env(safe-area-inset-right) + 18px)
-        calc(env(safe-area-inset-bottom) + 10px)
+        calc(env(safe-area-inset-bottom) + 14px)
         calc(env(safe-area-inset-left) + 18px);
-      display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto;
       transform: translate(var(--nudge-x), var(--nudge-y));
     }
 
-    .topline { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding-bottom: 7px; }
+    .climate-page { display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; }
+
+    .topline {
+      display: flex; align-items: baseline; justify-content: space-between;
+      gap: 12px; padding-bottom: 7px;
+    }
     h1 { margin: 0; font-size: 1.05rem; line-height: 1.2; font-weight: 600; letter-spacing: .01em; }
-    .freshness { font-size: .72rem; color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .freshness, .plot-meta {
+      font-size: .72rem; color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap;
+    }
     .freshness.stale { color: var(--caution); font-weight: 600; letter-spacing: .04em; }
 
     .sensor-list { min-height: 0; display: grid; align-content: stretch; row-gap: 5px; }
@@ -90,6 +98,31 @@
     .status-item.active strong { color: var(--fg); }
     .source-error { margin-left: auto; color: var(--caution); font-weight: 600; letter-spacing: .04em; }
 
+    .plot-page {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+    }
+    .plot-wrap { min-height: 0; position: relative; }
+    .plot-canvas { display: block; width: 100%; height: 100%; min-height: 280px; }
+    .plot-legend {
+      display: flex; flex-wrap: wrap; gap: 5px 13px; min-height: 25px;
+      padding-top: 5px; color: var(--secondary); font-size: .68rem;
+    }
+    .legend-item { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+    .legend-line { width: 14px; height: 2px; display: inline-block; }
+    .plot-empty {
+      position: absolute; inset: 0; display: grid; place-items: center;
+      color: var(--dim); font-size: .8rem; pointer-events: none;
+    }
+
+    .pager {
+      position: fixed; z-index: 10; left: 50%; transform: translateX(-50%);
+      bottom: calc(env(safe-area-inset-bottom) + 3px);
+      display: flex; gap: 5px; pointer-events: none;
+    }
+    .pager-dot { width: 4px; height: 4px; border-radius: 50%; background: #353c42; }
+    .pager-dot.active { background: #838b92; }
+
     @media (max-height: 680px) {
       .page {
         padding-top: calc(env(safe-area-inset-top) + 7px);
@@ -106,12 +139,13 @@
       .wall { padding: 6px 0; }
       .wall-value { font-size: 1.85rem; }
       .status-strip { min-height: 20px; padding-top: 4px; }
+      .plot-canvas { min-height: 210px; }
     }
   </style>
 </head>
 <body>
-  <div class="pages">
-    <main class="page" aria-label="Climate dashboard">
+  <div id="pages" class="pages">
+    <main class="page climate-page" aria-label="Climate dashboard">
       <header class="topline">
         <h1 id="title">Climate</h1>
         <div id="freshness" class="freshness">connecting</div>
@@ -132,9 +166,12 @@
       </footer>
     </main>
   </div>
+  <div id="pager" class="pager" aria-hidden="true"></div>
 
   <script>
     const els = {
+      pages: document.getElementById('pages'),
+      pager: document.getElementById('pager'),
       title: document.getElementById('title'),
       freshness: document.getElementById('freshness'),
       sensors: document.getElementById('sensors'),
@@ -148,8 +185,14 @@
       sourceError: document.getElementById('source-error'),
     };
 
+    const colours = ['#56B4E9','#E69F00','#009E73','#CC79A7','#D55E00','#0072B2','#F0E442','#999999'];
+    const dashes = [[],[8,4],[3,3],[10,3,2,3],[6,3],[12,5],[2,3],[8,3,2,3,2,3]];
     let refreshTimer = null;
+    let plotTimer = null;
     let currentState = null;
+    let plotPayload = null;
+    let plotPagesBuilt = false;
+    let plotResizeTimer = null;
 
     function finite(value) { return typeof value === 'number' && Number.isFinite(value); }
     function number(value, digits) { return finite(value) ? value.toFixed(digits) : '—'; }
@@ -246,6 +289,203 @@
       } else {
         els.statusStrip.classList.add('hidden');
       }
+
+      ensurePlotPages(state.plots);
+      updatePager();
+      if (plotPayload) drawAllPlots();
+    }
+
+    function ensurePlotPages(plotConfig) {
+      if (plotPagesBuilt) return;
+      const pages = plotConfig?.enabled ? (plotConfig.pages || []) : [];
+      for (const [index, plot] of pages.entries()) {
+        const page = document.createElement('section');
+        page.className = 'page plot-page';
+        page.dataset.plotIndex = String(index);
+        page.innerHTML = `
+          <header class="topline">
+            <h1></h1>
+            <div class="plot-meta"></div>
+          </header>
+          <div class="plot-wrap">
+            <canvas class="plot-canvas"></canvas>
+            <div class="plot-empty">waiting for data</div>
+          </div>
+          <div class="plot-legend"></div>
+        `;
+        page.querySelector('h1').textContent = plot.title;
+        page.querySelector('.plot-meta').textContent = `${plotConfig.hours} h`;
+        els.pages.appendChild(page);
+      }
+      plotPagesBuilt = true;
+    }
+
+    function sourceLabel(name) {
+      const found = currentState?.sensors?.find(s => s.source === name);
+      return found?.label || name;
+    }
+
+    function rowsForPlot(plot) {
+      if (!plotPayload?.rows) return [];
+      const allowed = new Set(plot.sensors || []);
+      return plotPayload.rows.filter(row =>
+        row.metric === plot.metric && (!allowed.size || allowed.has(String(row.sensor)))
+      );
+    }
+
+    function groupSeries(rows) {
+      const map = new Map();
+      for (const row of rows) {
+        const name = String(row.sensor);
+        if (!map.has(name)) map.set(name, []);
+        map.get(name).push([Number(row.ts_ms), Number(row.value)]);
+      }
+      return [...map.entries()]
+        .map(([name, points]) => ({ name, label: sourceLabel(name), points: points.filter(p => finite(p[0]) && finite(p[1])).sort((a,b)=>a[0]-b[0]) }))
+        .filter(series => series.points.length);
+    }
+
+    function formatClock(ms) {
+      const d = new Date(ms);
+      if ((currentState?.plots?.hours || 24) <= 36) {
+        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      }
+      return d.toLocaleDateString([], { weekday: 'short', hour: '2-digit' });
+    }
+
+    function drawPlot(page, plot) {
+      const canvas = page.querySelector('canvas');
+      const empty = page.querySelector('.plot-empty');
+      const legend = page.querySelector('.plot-legend');
+      const series = groupSeries(rowsForPlot(plot));
+      legend.replaceChildren();
+
+      if (!series.length) {
+        empty.style.display = 'grid';
+        const rect = canvas.getBoundingClientRect();
+        canvas.width = Math.max(1, Math.round(rect.width));
+        canvas.height = Math.max(1, Math.round(rect.height));
+        return;
+      }
+      empty.style.display = 'none';
+
+      series.forEach((s, i) => {
+        const item = document.createElement('span');
+        item.className = 'legend-item';
+        const line = document.createElement('span');
+        line.className = 'legend-line';
+        line.style.background = colours[i % colours.length];
+        item.append(line, document.createTextNode(s.label));
+        legend.appendChild(item);
+      });
+
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.max(1, Math.round(rect.width * dpr));
+      canvas.height = Math.max(1, Math.round(rect.height * dpr));
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      const w = rect.width, h = rect.height;
+      const L = 45, R = 8, T = 15, B = 28;
+      const all = series.flatMap(s => s.points);
+      let xmin = Math.min(...all.map(p => p[0]));
+      let xmax = Math.max(...all.map(p => p[0]));
+      let ymin = Math.min(...all.map(p => p[1]));
+      let ymax = Math.max(...all.map(p => p[1]));
+      if (plot.zero_baseline) ymin = Math.min(0, ymin);
+      const pad = Math.max((ymax - ymin) * .08, Math.abs(ymax || 1) * .01, .1);
+      ymin -= plot.zero_baseline && ymin === 0 ? 0 : pad;
+      ymax += pad;
+      if (xmin === xmax) { xmin -= 1; xmax += 1; }
+      if (ymin === ymax) { ymin -= 1; ymax += 1; }
+
+      const X = x => L + (x - xmin) / (xmax - xmin) * (w - L - R);
+      const Y = y => T + (ymax - y) / (ymax - ymin) * (h - T - B);
+      const styles = getComputedStyle(document.documentElement);
+      const grid = styles.getPropertyValue('--grid');
+      const dim = styles.getPropertyValue('--dim');
+      const fg = styles.getPropertyValue('--fg');
+
+      ctx.clearRect(0, 0, w, h);
+      ctx.font = '10px -apple-system, sans-serif';
+      ctx.textBaseline = 'middle';
+
+      for (let i = 0; i <= 4; i++) {
+        const value = ymin + (ymax - ymin) * i / 4;
+        const y = Y(value);
+        ctx.strokeStyle = grid;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([]);
+        ctx.beginPath(); ctx.moveTo(L, y); ctx.lineTo(w - R, y); ctx.stroke();
+        ctx.fillStyle = dim;
+        const digits = Math.abs(ymax - ymin) < 10 ? 1 : 0;
+        ctx.fillText(value.toFixed(digits), 2, y);
+      }
+
+      for (let i = 0; i <= 2; i++) {
+        const ms = xmin + (xmax - xmin) * i / 2;
+        const x = X(ms);
+        ctx.strokeStyle = grid;
+        ctx.beginPath(); ctx.moveTo(x, T); ctx.lineTo(x, h - B); ctx.stroke();
+        const label = formatClock(ms);
+        ctx.fillStyle = dim;
+        const tw = ctx.measureText(label).width;
+        ctx.fillText(label, Math.max(L, Math.min(x - tw / 2, w - R - tw)), h - 10);
+      }
+
+      series.forEach((s, i) => {
+        ctx.strokeStyle = colours[i % colours.length];
+        ctx.lineWidth = 1.6;
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        ctx.setLineDash(dashes[i % dashes.length]);
+        ctx.beginPath();
+        s.points.forEach((p, j) => j ? ctx.lineTo(X(p[0]), Y(p[1])) : ctx.moveTo(X(p[0]), Y(p[1])));
+        ctx.stroke();
+      });
+      ctx.setLineDash([]);
+
+      const latest = all.reduce((a, b) => a[0] > b[0] ? a : b);
+      const meta = page.querySelector('.plot-meta');
+      const unit = plot.unit ? ` ${plot.unit}` : '';
+      meta.textContent = series.length === 1
+        ? `${latest[1].toFixed(plot.metric === 'relative_humidity' || plot.metric === 'co2' || plot.metric === 'pm2_5' ? 0 : 1)}${unit} · ${currentState.plots.hours} h`
+        : `${currentState.plots.hours} h`;
+      ctx.fillStyle = fg;
+    }
+
+    function drawAllPlots() {
+      const plots = currentState?.plots?.pages || [];
+      document.querySelectorAll('.plot-page').forEach(page => {
+        const index = Number(page.dataset.plotIndex);
+        if (plots[index]) drawPlot(page, plots[index]);
+      });
+    }
+
+    function updatePager() {
+      const pages = [...document.querySelectorAll('.page')];
+      els.pager.replaceChildren(...pages.map((_, i) => {
+        const dot = document.createElement('span');
+        dot.className = 'pager-dot' + (i === 0 ? ' active' : '');
+        return dot;
+      }));
+    }
+
+    function currentPageIndex() {
+      return Math.max(0, Math.min(
+        document.querySelectorAll('.page').length - 1,
+        Math.round(els.pages.scrollLeft / Math.max(1, els.pages.clientWidth))
+      ));
+    }
+
+    function highlightPager() {
+      const index = currentPageIndex();
+      [...els.pager.children].forEach((dot, i) => dot.classList.toggle('active', i === index));
+      const page = document.querySelectorAll('.page')[index];
+      if (page?.classList.contains('plot-page')) {
+        requestAnimationFrame(() => drawAllPlots());
+      }
     }
 
     function loadCached() {
@@ -256,6 +496,30 @@
       return null;
     }
 
+    async function refreshPlots() {
+      if (!currentState?.plots?.enabled) return;
+      try {
+        const response = await fetch(`/api/series?hours=${encodeURIComponent(currentState.plots.hours)}`, { cache: 'no-store' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        if (!data.ok) throw new Error('series unavailable');
+        plotPayload = data;
+        localStorage.setItem('minidash:last-series', JSON.stringify(data));
+        drawAllPlots();
+      } catch (_) {
+        try {
+          const cached = JSON.parse(localStorage.getItem('minidash:last-series'));
+          if (cached?.ok) {
+            plotPayload = cached;
+            drawAllPlots();
+          }
+        } catch (_) {}
+      }
+      clearTimeout(plotTimer);
+      const seconds = Math.max(30, Number(currentState?.plots?.refresh_seconds) || 300);
+      plotTimer = setTimeout(refreshPlots, seconds * 1000);
+    }
+
     async function refresh() {
       try {
         const response = await fetch('/api/state', { cache: 'no-store' });
@@ -264,6 +528,7 @@
         if (!state.ok) throw new Error('source unavailable');
         localStorage.setItem('minidash:last-state', JSON.stringify(state));
         render(state);
+        if (state.plots?.enabled && !plotPayload) refreshPlots();
         const seconds = Math.max(5, Number(state.display?.refresh_seconds) || 20);
         clearTimeout(refreshTimer);
         refreshTimer = setTimeout(refresh, seconds * 1000);
@@ -279,8 +544,6 @@
       }
     }
 
-    // Move the entire static layout by a barely perceptible pixel every few
-    // minutes to avoid leaving exactly the same OLED pixels lit indefinitely.
     const nudges = [[0,0],[1,0],[0,1],[-1,0],[0,-1],[1,1],[-1,-1]];
     let nudgeIndex = 0;
     function nudge() {
@@ -294,8 +557,18 @@
     if (cached) render(cached, { failed: true });
     refresh();
     setInterval(nudge, 5 * 60_000);
-    addEventListener('online', refresh);
-    addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+    els.pages.addEventListener('scroll', () => {
+      clearTimeout(els.pages._pagerTimer);
+      els.pages._pagerTimer = setTimeout(highlightPager, 80);
+    }, { passive: true });
+    addEventListener('resize', () => {
+      clearTimeout(plotResizeTimer);
+      plotResizeTimer = setTimeout(drawAllPlots, 120);
+    });
+    addEventListener('online', () => { refresh(); refreshPlots(); });
+    addEventListener('visibilitychange', () => {
+      if (!document.hidden) { refresh(); refreshPlots(); }
+    });
   </script>
 </body>
 </html>
