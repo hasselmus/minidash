@@ -26,15 +26,37 @@ if (!existsSync(CONFIG_PATH)) {
 }
 
 const config = readJson(CONFIG_PATH);
-const humidity = config.humidity ?? {};
-if (typeof humidity.base_url !== 'string' || !humidity.base_url) {
-  fail('humidity.base_url must be set in the local configuration');
+const environment = config.environment ?? null;
+const legacyHumidity = environment ? null : (config.humidity ?? null);
+const sourceConfig = environment ?? legacyHumidity ?? {};
+
+if (typeof sourceConfig.base_url !== 'string' || !sourceConfig.base_url) {
+  fail('environment.base_url must be set in the local configuration (legacy humidity.base_url is also accepted)');
 }
 
+const nativeEnvironment = Boolean(environment);
 const serverConfig = config.server ?? {};
 const HOST = process.env.MINIDASH_HOST || serverConfig.host || '0.0.0.0';
 const PORT = Number(process.env.MINIDASH_PORT || serverConfig.port || 8788);
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) fail(`invalid server port: ${PORT}`);
+
+function clampNumber(value, min, max, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+}
+function finiteOr(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+function num(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+function boolValue(value) {
+  if (value === null || value === undefined) return null;
+  return ['true', '1', 'yes', 'on', 'open'].includes(String(value).toLowerCase());
+}
 
 const display = {
   title: config.display?.title || 'Climate',
@@ -48,40 +70,144 @@ const display = {
 const sensorConfig = Array.isArray(config.sensors) ? config.sensors : [];
 const wallConfig = {
   enabled: config.wall?.enabled !== false,
+  source: config.wall?.source || null,
   label: config.wall?.label || 'Wall margin',
   caution_below_c: finiteOr(config.wall?.caution_below_c, 3),
   warning_below_c: finiteOr(config.wall?.warning_below_c, 1),
 };
 const statusConfig = {
-  door_label: config.status?.door_label || 'Door',
-  dehumidifier_label: config.status?.dehumidifier_label || 'Dehumidifier',
+  door: {
+    entity: config.status?.door?.entity ?? null,
+    field: config.status?.door?.field ?? null,
+    label: config.status?.door?.label || config.status?.door_label || 'Door',
+  },
+  dehumidifier: {
+    entity: config.status?.dehumidifier?.entity ?? null,
+    field: config.status?.dehumidifier?.field ?? null,
+    label: config.status?.dehumidifier?.label || config.status?.dehumidifier_label || 'Dehumidifier',
+  },
 };
 
-function clampNumber(value, min, max, fallback) {
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
-}
-function finiteOr(value, fallback) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
-}
-function num(value) {
-  if (value === null || value === undefined) return null;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
-}
-function boolFromRows(rows, key) {
-  for (const row of rows) {
-    const value = num(row?.[key]);
-    if (value !== null) return value >= 0.5;
+const plots = {
+  enabled: config.plots?.enabled !== false && Array.isArray(config.plots?.pages) && config.plots.pages.length > 0,
+  hours: clampNumber(config.plots?.hours, 1, 24 * 30, 24),
+  refresh_seconds: clampNumber(config.plots?.refresh_seconds, 30, 3600, 300),
+  pages: Array.isArray(config.plots?.pages) ? config.plots.pages.map(page => ({
+    title: String(page.title || page.metric || 'Plot'),
+    metric: String(page.metric || ''),
+    unit: String(page.unit || ''),
+    sensors: Array.isArray(page.sensors) ? page.sensors.map(String) : [],
+    zero_baseline: page.zero_baseline === true,
+  })).filter(page => page.metric) : [],
+};
+
+function sourceUrl(pathname, params = {}) {
+  const url = new URL(pathname, sourceConfig.base_url);
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== null && value !== undefined) url.searchParams.set(key, String(value));
   }
-  return null;
+  return url;
 }
 
-function humidityUrl() {
-  const url = new URL('/api/data', humidity.base_url);
-  url.searchParams.set('hours', String(clampNumber(humidity.hours, 1, 24, 1)));
-  return url;
+async function fetchJson(url) {
+  const timeoutMs = clampNumber(sourceConfig.timeout_ms, 500, 30_000, 5000);
+  const response = await fetch(url, {
+    headers: { accept: 'application/json' },
+    signal: AbortSignal.timeout(timeoutMs),
+    cache: 'no-store',
+  });
+  if (!response.ok) throw new Error(`environment source returned HTTP ${response.status}`);
+  return response.json();
+}
+
+function configuredSensorsFromNative(source) {
+  const latest = Array.isArray(source.sensors) ? source.sensors : [];
+  const byName = new Map(latest.map(row => [String(row.sensor), row]));
+  const configured = sensorConfig.length
+    ? sensorConfig
+    : latest.map(row => ({ source: String(row.sensor), label: String(row.sensor) }));
+
+  return configured.map(entry => {
+    const sourceName = String(entry.source ?? '');
+    const row = byName.get(sourceName);
+    return {
+      source: sourceName,
+      label: String(entry.label || sourceName || 'Sensor'),
+      available: Boolean(row),
+      temperature_c: num(row?.temperature),
+      rh_pct: num(row?.relative_humidity),
+      ah_g_m3: num(row?.absolute_humidity),
+      co2_ppm: num(row?.co2),
+      pm25_ugm3: num(row?.pm2_5),
+      air_quality: num(row?.air_quality),
+      sampled_ts_ms: num(row?.sampled_ts_ms),
+    };
+  });
+}
+
+function stateMap(rows) {
+  const map = new Map();
+  for (const row of rows ?? []) map.set(`${row.entity}/${row.field}`, row);
+  return map;
+}
+
+function stateFromRef(map, ref) {
+  if (!ref?.entity || !ref?.field) return null;
+  const row = map.get(`${ref.entity}/${ref.field}`);
+  return row ? boolValue(row.value) : null;
+}
+
+function wallFromNative(source) {
+  if (!wallConfig.enabled || !wallConfig.source) return null;
+  const row = (source.sensors ?? []).find(item => String(item.sensor) === wallConfig.source);
+  if (!row) return {
+    label: wallConfig.label,
+    available: false,
+    dew_margin_c: null,
+    probe_temperature_c: null,
+    dew_point_c: null,
+    sampled_ts_ms: null,
+    caution_below_c: wallConfig.caution_below_c,
+    warning_below_c: wallConfig.warning_below_c,
+  };
+  return {
+    label: wallConfig.label,
+    available: true,
+    dew_margin_c: num(row.dew_margin),
+    probe_temperature_c: num(row.probe_temperature),
+    dew_point_c: num(row.dew_point),
+    sampled_ts_ms: num(row.sampled_ts_ms),
+    caution_below_c: wallConfig.caution_below_c,
+    warning_below_c: wallConfig.warning_below_c,
+  };
+}
+
+function normaliseNative(source) {
+  const sensors = configuredSensorsFromNative(source);
+  const wall = wallFromNative(source);
+  const states = stateMap(source.states);
+  const timestamps = sensors.map(s => s.sampled_ts_ms).filter(Number.isFinite);
+  if (Number.isFinite(wall?.sampled_ts_ms)) timestamps.push(wall.sampled_ts_ms);
+  const latestTs = timestamps.length ? Math.max(...timestamps) : null;
+  const ageMs = latestTs === null ? null : Math.max(0, Date.now() - latestTs);
+
+  return {
+    ok: true,
+    now: Date.now(),
+    display,
+    plots,
+    sensors,
+    wall,
+    status: {
+      door: { label: statusConfig.door.label, active: stateFromRef(states, statusConfig.door) },
+      dehumidifier: { label: statusConfig.dehumidifier.label, active: stateFromRef(states, statusConfig.dehumidifier) },
+    },
+    freshness: {
+      sampled_ts_ms: latestTs,
+      age_ms: ageMs,
+      stale: ageMs === null || ageMs > display.stale_after_minutes * 60_000,
+    },
+  };
 }
 
 function latestWall(rows) {
@@ -93,23 +219,34 @@ function latestWall(rows) {
   return null;
 }
 
-function normaliseState(source) {
+function boolFromRows(rows, key) {
+  for (const row of rows) {
+    const value = num(row?.[key]);
+    if (value !== null) return value >= 0.5;
+  }
+  return null;
+}
+
+function normaliseLegacy(source) {
   const latest = Array.isArray(source.latest) ? source.latest : [];
   const byName = new Map(latest.map(row => [String(row.sensor), row]));
-
-  const configuredSensors = sensorConfig.length
+  const configured = sensorConfig.length
     ? sensorConfig
     : latest.map(row => ({ source: String(row.sensor), label: String(row.sensor) }));
 
-  const sensors = configuredSensors.map(entry => {
+  const sensors = configured.map(entry => {
     const sourceName = String(entry.source ?? '');
     const row = byName.get(sourceName);
     return {
+      source: sourceName,
       label: String(entry.label || sourceName || 'Sensor'),
       available: Boolean(row),
       temperature_c: num(row?.temperature_c),
       rh_pct: num(row?.rh_pct),
       ah_g_m3: num(row?.ah_g_m3),
+      co2_ppm: null,
+      pm25_ugm3: null,
+      air_quality: null,
       sampled_ts_ms: num(row?.sampled_ts_ms),
     };
   });
@@ -129,18 +266,18 @@ function normaliseState(source) {
   const timestamps = sensors.map(s => s.sampled_ts_ms).filter(Number.isFinite);
   if (Number.isFinite(wall?.sampled_ts_ms)) timestamps.push(wall.sampled_ts_ms);
   const latestTs = timestamps.length ? Math.max(...timestamps) : null;
-  const now = Date.now();
-  const ageMs = latestTs === null ? null : Math.max(0, now - latestTs);
+  const ageMs = latestTs === null ? null : Math.max(0, Date.now() - latestTs);
 
   return {
     ok: true,
-    now,
+    now: Date.now(),
     display,
+    plots: { ...plots, enabled: false, pages: [] },
     sensors,
     wall,
     status: {
-      door: { label: statusConfig.door_label, active: boolFromRows(latest, 'balcony_door_open') },
-      dehumidifier: { label: statusConfig.dehumidifier_label, active: boolFromRows(latest, 'tefnut_dehumidifying') },
+      door: { label: statusConfig.door.label, active: boolFromRows(latest, 'balcony_door_open') },
+      dehumidifier: { label: statusConfig.dehumidifier.label, active: boolFromRows(latest, 'tefnut_dehumidifying') },
     },
     freshness: {
       sampled_ts_ms: latestTs,
@@ -151,14 +288,23 @@ function normaliseState(source) {
 }
 
 async function getState() {
-  const timeoutMs = clampNumber(humidity.timeout_ms, 500, 30_000, 5000);
-  const response = await fetch(humidityUrl(), {
-    headers: { accept: 'application/json' },
-    signal: AbortSignal.timeout(timeoutMs),
-    cache: 'no-store',
-  });
-  if (!response.ok) throw new Error(`humidity source returned HTTP ${response.status}`);
-  return normaliseState(await response.json());
+  if (nativeEnvironment) {
+    return normaliseNative(await fetchJson(sourceUrl('/api/v1/latest')));
+  }
+  const hours = clampNumber(sourceConfig.hours, 1, 24, 1);
+  return normaliseLegacy(await fetchJson(sourceUrl('/api/data', { hours })));
+}
+
+async function getSeries(hours) {
+  if (!nativeEnvironment) return { ok: true, hours, rows: [] };
+  const source = await fetchJson(sourceUrl('/api/v1/series', { hours }));
+  return {
+    ok: true,
+    now: Date.now(),
+    hours: Number(source.hours ?? hours),
+    bucket_ms: num(source.bucket_ms),
+    rows: Array.isArray(source.rows) ? source.rows : [],
+  };
 }
 
 const staticFiles = new Map([
@@ -190,13 +336,27 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/state') {
       try {
         return sendJson(res, 200, await getState());
-      } catch (error) {
-        return sendJson(res, 502, { ok: false, now: Date.now(), error: 'humidity source unavailable' });
+      } catch {
+        return sendJson(res, 502, { ok: false, now: Date.now(), error: 'environment source unavailable' });
+      }
+    }
+
+    if (url.pathname === '/api/series') {
+      try {
+        const hours = clampNumber(url.searchParams.get('hours'), 1, 24 * 30, plots.hours);
+        return sendJson(res, 200, await getSeries(hours));
+      } catch {
+        return sendJson(res, 502, { ok: false, now: Date.now(), error: 'environment series unavailable' });
       }
     }
 
     if (url.pathname === '/status') {
-      return sendJson(res, 200, { ok: true, service: 'minidash', now: Date.now() });
+      return sendJson(res, 200, {
+        ok: true,
+        service: 'minidash',
+        source: nativeEnvironment ? 'environment-logger' : 'legacy-humidity-logger',
+        now: Date.now()
+      });
     }
 
     const item = staticFiles.get(url.pathname);
@@ -204,12 +364,12 @@ const server = http.createServer(async (req, res) => {
     const [filename, type] = item;
     const body = readFileSync(path.join(HERE, filename));
     return send(res, 200, body, type);
-  } catch (error) {
+  } catch {
     return sendJson(res, 500, { ok: false, error: 'internal error' });
   }
 });
 
 server.listen(PORT, HOST, () => {
   console.log(`MiniDash listening on http://${HOST}:${PORT}/`);
-  console.log(`Humidity source: ${humidityUrl().origin}`);
+  console.log(`Environment source: ${sourceConfig.base_url} (${nativeEnvironment ? 'native API' : 'legacy compatibility API'})`);
 });
