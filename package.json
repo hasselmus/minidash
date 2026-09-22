@@ -12,6 +12,6 @@
     "service-install": "bash scripts/install-systemd.sh",
     "service-status": "systemctl status minidash --no-pager",
     "service-logs": "journalctl -u minidash -f",
-    "check": "node --check server.mjs"
+    "check": "node --check server.mjs && node scripts/check-html.mjs"
   }
 }
