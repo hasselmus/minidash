@@ -1,6 +1,6 @@
 {
   "name": "minidash",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Low-distraction always-on LAN dashboard for a small phone display",
@@ -11,6 +11,7 @@
     "start": "node server.mjs",
     "service-install": "bash scripts/install-systemd.sh",
     "service-status": "systemctl status minidash --no-pager",
-    "service-logs": "journalctl -u minidash -f"
+    "service-logs": "journalctl -u minidash -f",
+    "check": "node --check server.mjs"
   }
 }
